@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 from datetime import datetime, timezone, timedelta
 import pandas as pd
-import altair as alt
 
 # =================================================
 # TIMEZONE CONFIG (UTC+7 / WIB)
@@ -11,6 +10,9 @@ WIB = timezone(timedelta(hours=7))
 
 def to_wib(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=WIB).strftime("%d %b %H:%M")
+
+def to_wib_date(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=WIB).strftime("%d %b %Y")
 
 # =================================================
 # CONFIG
@@ -64,10 +66,14 @@ def normalize_forecast(raw, limit=8):
     rows = []
     for item in raw["list"][:limit]:
         rows.append({
-            "Waktu": to_wib(item["dt"]),
-            "Suhu": item["main"]["temp"]
+            "date": to_wib_date(item["dt"]),
+            "time": to_wib(item["dt"]),
+            "temp": item["main"]["temp"],
+            "humidity": item["main"]["humidity"],
+            "weather": item["weather"][0]["description"].title(),
+            "wind": item["wind"]["speed"]
         })
-    return pd.DataFrame(rows)
+    return rows
 
 def normalize_air(raw):
     d = raw["list"][0]
@@ -84,10 +90,10 @@ def normalize_air(raw):
 # =================================================
 def aqi_description(aqi):
     return {
-        1: ("Baik", "Kualitas udara sangat baik, aman untuk semua aktivitas."),
-        2: ("Sedang", "Masih aman, tapi kelompok sensitif sebaiknya mengurangi aktivitas berat."),
-        3: ("Tidak Sehat (Sensitif)", "Anak-anak & lansia sebaiknya mengurangi aktivitas luar."),
-        4: ("Tidak Sehat", "Hindari aktivitas luar ruangan dalam waktu lama."),
+        1: ("Baik", "Udara sangat baik dan aman untuk semua aktivitas."),
+        2: ("Sedang", "Masih aman, kelompok sensitif sebaiknya waspada."),
+        3: ("Tidak Sehat (Sensitif)", "Kurangi aktivitas luar bagi anak & lansia."),
+        4: ("Tidak Sehat", "Hindari aktivitas luar ruangan lama."),
         5: ("Sangat Tidak Sehat", "Sebaiknya tetap di dalam ruangan.")
     }.get(aqi, ("Tidak diketahui", ""))
 
@@ -97,7 +103,7 @@ def aqi_description(aqi):
 st.set_page_config(page_title="Weather App MVP", layout="wide")
 
 st.markdown("## 🌤️ Weather App MVP")
-st.caption("Forecast Visual • Air Quality Explained • Timezone WIB (UTC+7)")
+st.caption("Modern Forecast Cards • Air Quality Explained • WIB (UTC+7)")
 
 with st.sidebar:
     city = st.text_input("🌍 Nama Kota", "Jakarta")
@@ -119,7 +125,7 @@ if load:
     })
 
     current = normalize_current(current_raw)
-    forecast_df = normalize_forecast(forecast_raw)
+    forecast = normalize_forecast(forecast_raw)
     air = normalize_air(air_raw)
 
     # =========================
@@ -136,17 +142,41 @@ if load:
     st.info(f"**{current['weather']}** — Update: {current['time']}")
 
     # =========================
-    # FORECAST CHART
+    # FORECAST CARDS (MODERN)
     # =========================
     st.markdown("### ⏱️ Forecast 24 Jam Ke Depan")
 
-    chart = alt.Chart(forecast_df).mark_line(point=True).encode(
-        x=alt.X("Waktu", title="Waktu"),
-        y=alt.Y("Suhu", title="Suhu (°C)"),
-        tooltip=["Waktu", "Suhu"]
-    ).properties(height=300)
+    grouped = {}
+    for item in forecast:
+        grouped.setdefault(item["date"], []).append(item)
 
-    st.altair_chart(chart, use_container_width=True)
+    for date, items in grouped.items():
+        st.markdown(f"#### 📅 {date}")
+        cols = st.columns(len(items))
+
+        for col, item in zip(cols, items):
+            with col:
+                st.markdown(
+                    f"""
+                    <div style="
+                        padding:16px;
+                        border-radius:14px;
+                        background:linear-gradient(180deg,#ffffff,#f3f6fa);
+                        box-shadow:0 4px 12px rgba(0,0,0,0.06);
+                        text-align:center;
+                    ">
+                        <div style="font-size:14px;color:#666">{item['time']}</div>
+                        <div style="font-size:28px;font-weight:600;margin:8px 0">
+                            {item['temp']}°C
+                        </div>
+                        <div style="font-size:14px">{item['weather']}</div>
+                        <hr style="margin:10px 0">
+                        <div style="font-size:13px">💧 {item['humidity']}%</div>
+                        <div style="font-size:13px">🌬️ {item['wind']} m/s</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
     # =========================
     # AIR QUALITY
@@ -162,21 +192,4 @@ if load:
     a4.metric("CO", f"{air['CO']} µg/m³")
 
     st.success(desc)
-
-    with st.expander("ℹ️ Penjelasan Istilah Kualitas Udara"):
-        st.markdown("""
-**AQI (Air Quality Index)**  
-Angka ringkasan kualitas udara (1–5). Semakin kecil, semakin baik.
-
-**PM2.5**  
-Partikel sangat halus (<2.5µm). Bisa masuk ke paru-paru dan aliran darah.  
-➡️ Paling berbahaya untuk kesehatan.
-
-**PM10**  
-Partikel debu lebih besar (<10µm). Bisa mengiritasi saluran pernapasan.
-
-**CO (Carbon Monoxide)**  
-Gas beracun dari kendaraan & pembakaran. Tinggi → berbahaya jika terhirup lama.
-        """)
-
     st.caption(f"Update kualitas udara: {air['time']} (WIB)")
