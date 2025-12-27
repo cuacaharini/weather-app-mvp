@@ -1,68 +1,114 @@
 import streamlit as st
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
-# =========================
+# =================================================
+# TIMEZONE CONFIG (UTC+7 / WIB)
+# =================================================
+WIB = timezone(timedelta(hours=7))
+
+def to_wib_datetime(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, tz=WIB).isoformat()
+
+# =================================================
 # CONFIG
-# =========================
+# =================================================
 if "OPENWEATHER_API_KEY" not in st.secrets:
     st.error("OPENWEATHER_API_KEY belum diset di Streamlit Secrets")
     st.stop()
 
 API_KEY = st.secrets["OPENWEATHER_API_KEY"]
 
-BASE_CURRENT_URL = "https://api.openweathermap.org/data/2.5/weather"
+BASE_WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 BASE_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
+BASE_GEO_URL = "https://api.openweathermap.org/geo/1.0/direct"
+BASE_AIR_URL = "https://api.openweathermap.org/data/2.5/air_pollution"
 
-# =========================
-# SERVICE FUNCTIONS
-# =========================
-def get_current_weather(city: str) -> dict:
+# =================================================
+# SERVICE LAYER
+# =================================================
+def geocode_city(city: str) -> dict:
     params = {
         "q": city,
-        "appid": API_KEY,
-        "units": "metric",
-        "lang": "id"
+        "limit": 1,
+        "appid": API_KEY
     }
-    response = requests.get(BASE_CURRENT_URL, params=params, timeout=10)
+    res = requests.get(BASE_GEO_URL, params=params, timeout=10)
 
-    if response.status_code != 200:
-        st.error(f"Gagal ambil current weather (HTTP {response.status_code})")
+    if res.status_code != 200 or not res.json():
+        st.error("Gagal geocoding lokasi")
         st.stop()
 
-    return response.json()
-
-
-def get_forecast(city: str) -> dict:
-    params = {
-        "q": city,
-        "appid": API_KEY,
-        "units": "metric",
-        "lang": "id"
-    }
-    response = requests.get(BASE_FORECAST_URL, params=params, timeout=10)
-
-    if response.status_code != 200:
-        st.error(f"Gagal ambil forecast (HTTP {response.status_code})")
-        st.stop()
-
-    return response.json()
-
-
-# =========================
-# NORMALIZATION (API CONTRACT)
-# =========================
-def normalize_current_weather(raw: dict) -> dict:
+    data = res.json()[0]
     return {
-        "city": raw.get("name"),
-        "country": raw.get("sys", {}).get("country"),
-        "temp": raw.get("main", {}).get("temp"),
-        "feels_like": raw.get("main", {}).get("feels_like"),
-        "humidity": raw.get("main", {}).get("humidity"),
-        "weather": raw.get("weather", [{}])[0].get("description"),
-        "wind_speed": raw.get("wind", {}).get("speed"),
-        "timestamp": raw.get("dt"),
-        "datetime": datetime.utcfromtimestamp(raw.get("dt")).isoformat() + "Z"
+        "city": data.get("name"),
+        "country": data.get("country"),
+        "lat": data.get("lat"),
+        "lon": data.get("lon")
+    }
+
+
+def get_current_weather(lat: float, lon: float) -> dict:
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": API_KEY,
+        "units": "metric",
+        "lang": "id"
+    }
+    res = requests.get(BASE_WEATHER_URL, params=params, timeout=10)
+
+    if res.status_code != 200:
+        st.error(f"Gagal ambil current weather (HTTP {res.status_code})")
+        st.stop()
+
+    return res.json()
+
+
+def get_forecast(lat: float, lon: float) -> dict:
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": API_KEY,
+        "units": "metric",
+        "lang": "id"
+    }
+    res = requests.get(BASE_FORECAST_URL, params=params, timeout=10)
+
+    if res.status_code != 200:
+        st.error(f"Gagal ambil forecast (HTTP {res.status_code})")
+        st.stop()
+
+    return res.json()
+
+
+def get_air_pollution(lat: float, lon: float) -> dict:
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "appid": API_KEY
+    }
+    res = requests.get(BASE_AIR_URL, params=params, timeout=10)
+
+    if res.status_code != 200:
+        st.error(f"Gagal ambil air pollution (HTTP {res.status_code})")
+        st.stop()
+
+    return res.json()
+
+# =================================================
+# NORMALIZATION (API CONTRACT)
+# =================================================
+def normalize_current_weather(raw: dict) -> dict:
+    ts = raw["dt"]
+    return {
+        "temp": raw["main"]["temp"],
+        "feels_like": raw["main"]["feels_like"],
+        "humidity": raw["main"]["humidity"],
+        "weather": raw["weather"][0]["description"],
+        "wind_speed": raw["wind"]["speed"],
+        "timestamp": ts,
+        "datetime_wib": to_wib_datetime(ts)
     }
 
 
@@ -70,42 +116,63 @@ def normalize_forecast(raw: dict, limit: int = 8) -> list:
     """
     limit=8 -> 24 jam ke depan (3 jam x 8)
     """
-    forecast_list = []
-
-    for item in raw.get("list", [])[:limit]:
-        forecast_list.append({
-            "timestamp": item.get("dt"),
-            "datetime": datetime.utcfromtimestamp(item.get("dt")).isoformat() + "Z",
-            "temp": item.get("main", {}).get("temp"),
-            "humidity": item.get("main", {}).get("humidity"),
-            "weather": item.get("weather", [{}])[0].get("description"),
-            "wind_speed": item.get("wind", {}).get("speed")
+    result = []
+    for item in raw["list"][:limit]:
+        ts = item["dt"]
+        result.append({
+            "timestamp": ts,
+            "datetime_wib": to_wib_datetime(ts),
+            "temp": item["main"]["temp"],
+            "humidity": item["main"]["humidity"],
+            "weather": item["weather"][0]["description"],
+            "wind_speed": item["wind"]["speed"]
         })
+    return result
 
-    return forecast_list
 
+def normalize_air_pollution(raw: dict) -> dict:
+    data = raw["list"][0]
+    ts = data["dt"]
+    return {
+        "aqi": data["main"]["aqi"],  # 1=Good, 5=Very Poor
+        "components": data["components"],
+        "timestamp": ts,
+        "datetime_wib": to_wib_datetime(ts)
+    }
 
-# =========================
-# STREAMLIT UI (MVP)
-# =========================
+# =================================================
+# STREAMLIT UI (MVP / DATA EXPLORER)
+# =================================================
 st.set_page_config(page_title="Weather Data MVP", layout="centered")
-
 st.title("Weather Data MVP")
-st.caption("Cloud-only MVP | Data-first | OpenWeather Free Tier")
+st.caption("Current • Forecast • Geocoding • Air Quality | Timezone WIB (UTC+7)")
 
 city = st.text_input("Nama Kota", value="Jakarta")
 
 if st.button("Ambil Data"):
-    # Current weather
-    raw_current = get_current_weather(city)
-    clean_current = normalize_current_weather(raw_current)
+    # Geocoding
+    location = geocode_city(city)
 
-    st.subheader("Current Weather (API-ready)")
-    st.json(clean_current)
+    # Current Weather
+    current_raw = get_current_weather(location["lat"], location["lon"])
+    current_clean = normalize_current_weather(current_raw)
 
     # Forecast
-    raw_forecast = get_forecast(city)
-    clean_forecast = normalize_forecast(raw_forecast)
+    forecast_raw = get_forecast(location["lat"], location["lon"])
+    forecast_clean = normalize_forecast(forecast_raw)
 
-    st.subheader("Forecast (24 Jam ke Depan)")
-    st.json(clean_forecast)
+    # Air Pollution
+    air_raw = get_air_pollution(location["lat"], location["lon"])
+    air_clean = normalize_air_pollution(air_raw)
+
+    # FINAL API-READY RESPONSE
+    response = {
+        "location": location,
+        "current": current_clean,
+        "forecast_24h": forecast_clean,
+        "air_quality": air_clean,
+        "timezone": "UTC+7 (WIB)"
+    }
+
+    st.subheader("API-ready Response")
+    st.json(response)
