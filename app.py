@@ -7,8 +7,8 @@ from datetime import datetime, timezone, timedelta
 # =================================================
 WIB = timezone(timedelta(hours=7))
 
-def to_wib_datetime(timestamp: int) -> str:
-    return datetime.fromtimestamp(timestamp, tz=WIB).isoformat()
+def to_wib_datetime(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=WIB).strftime("%d %b %Y %H:%M WIB")
 
 # =================================================
 # CONFIG
@@ -28,151 +28,122 @@ BASE_AIR_URL = "https://api.openweathermap.org/data/2.5/air_pollution"
 # SERVICE LAYER
 # =================================================
 def geocode_city(city: str) -> dict:
-    params = {
-        "q": city,
-        "limit": 1,
-        "appid": API_KEY
-    }
-    res = requests.get(BASE_GEO_URL, params=params, timeout=10)
-
+    res = requests.get(
+        BASE_GEO_URL,
+        params={"q": city, "limit": 1, "appid": API_KEY},
+        timeout=10
+    )
     if res.status_code != 200 or not res.json():
-        st.error("Gagal geocoding lokasi")
+        st.error("Lokasi tidak ditemukan")
         st.stop()
 
-    data = res.json()[0]
-    return {
-        "city": data.get("name"),
-        "country": data.get("country"),
-        "lat": data.get("lat"),
-        "lon": data.get("lon")
-    }
+    d = res.json()[0]
+    return {"city": d["name"], "country": d["country"], "lat": d["lat"], "lon": d["lon"]}
 
 
-def get_current_weather(lat: float, lon: float) -> dict:
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": API_KEY,
-        "units": "metric",
-        "lang": "id"
-    }
-    res = requests.get(BASE_WEATHER_URL, params=params, timeout=10)
-
+def get_json(url: str, params: dict) -> dict:
+    res = requests.get(url, params=params, timeout=10)
     if res.status_code != 200:
-        st.error(f"Gagal ambil current weather (HTTP {res.status_code})")
+        st.error(f"API error ({res.status_code})")
         st.stop()
-
-    return res.json()
-
-
-def get_forecast(lat: float, lon: float) -> dict:
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": API_KEY,
-        "units": "metric",
-        "lang": "id"
-    }
-    res = requests.get(BASE_FORECAST_URL, params=params, timeout=10)
-
-    if res.status_code != 200:
-        st.error(f"Gagal ambil forecast (HTTP {res.status_code})")
-        st.stop()
-
-    return res.json()
-
-
-def get_air_pollution(lat: float, lon: float) -> dict:
-    params = {
-        "lat": lat,
-        "lon": lon,
-        "appid": API_KEY
-    }
-    res = requests.get(BASE_AIR_URL, params=params, timeout=10)
-
-    if res.status_code != 200:
-        st.error(f"Gagal ambil air pollution (HTTP {res.status_code})")
-        st.stop()
-
     return res.json()
 
 # =================================================
-# NORMALIZATION (API CONTRACT)
+# NORMALIZATION
 # =================================================
-def normalize_current_weather(raw: dict) -> dict:
+def normalize_current(raw):
     ts = raw["dt"]
     return {
         "temp": raw["main"]["temp"],
-        "feels_like": raw["main"]["feels_like"],
+        "feels": raw["main"]["feels_like"],
         "humidity": raw["main"]["humidity"],
-        "weather": raw["weather"][0]["description"],
-        "wind_speed": raw["wind"]["speed"],
-        "timestamp": ts,
-        "datetime_wib": to_wib_datetime(ts)
+        "weather": raw["weather"][0]["description"].title(),
+        "wind": raw["wind"]["speed"],
+        "time": to_wib_datetime(ts),
     }
 
 
-def normalize_forecast(raw: dict, limit: int = 8) -> list:
-    """
-    limit=8 -> 24 jam ke depan (3 jam x 8)
-    """
-    result = []
+def normalize_forecast(raw, limit=8):
+    rows = []
     for item in raw["list"][:limit]:
-        ts = item["dt"]
-        result.append({
-            "timestamp": ts,
-            "datetime_wib": to_wib_datetime(ts),
-            "temp": item["main"]["temp"],
-            "humidity": item["main"]["humidity"],
-            "weather": item["weather"][0]["description"],
-            "wind_speed": item["wind"]["speed"]
+        rows.append({
+            "Waktu": to_wib_datetime(item["dt"]),
+            "Suhu (°C)": item["main"]["temp"],
+            "Cuaca": item["weather"][0]["description"].title(),
+            "Angin (m/s)": item["wind"]["speed"]
         })
-    return result
+    return rows
 
 
-def normalize_air_pollution(raw: dict) -> dict:
-    data = raw["list"][0]
-    ts = data["dt"]
+def normalize_air(raw):
+    d = raw["list"][0]
     return {
-        "aqi": data["main"]["aqi"],  # 1=Good, 5=Very Poor
-        "components": data["components"],
-        "timestamp": ts,
-        "datetime_wib": to_wib_datetime(ts)
+        "AQI": d["main"]["aqi"],
+        "PM2.5": d["components"]["pm2_5"],
+        "PM10": d["components"]["pm10"],
+        "CO": d["components"]["co"],
+        "Waktu": to_wib_datetime(d["dt"])
     }
 
 # =================================================
-# STREAMLIT UI (MVP / DATA EXPLORER)
+# UI
 # =================================================
-st.set_page_config(page_title="Weather Data MVP", layout="centered")
-st.title("Weather Data MVP")
-st.caption("Current • Forecast • Geocoding • Air Quality | Timezone WIB (UTC+7)")
+st.set_page_config(page_title="Weather App MVP", layout="wide")
 
-city = st.text_input("Nama Kota", value="Jakarta")
+st.markdown("## 🌤️ Weather App MVP")
+st.caption("Current Weather • Forecast 24 Jam • Air Quality (UTC+7 WIB)")
 
-if st.button("Ambil Data"):
-    # Geocoding
-    location = geocode_city(city)
+with st.sidebar:
+    city = st.text_input("🌍 Nama Kota", "Jakarta")
+    load = st.button("🔍 Ambil Data")
 
-    # Current Weather
-    current_raw = get_current_weather(location["lat"], location["lon"])
-    current_clean = normalize_current_weather(current_raw)
+if load:
+    loc = geocode_city(city)
 
-    # Forecast
-    forecast_raw = get_forecast(location["lat"], location["lon"])
-    forecast_clean = normalize_forecast(forecast_raw)
+    current_raw = get_json(BASE_WEATHER_URL, {
+        "lat": loc["lat"], "lon": loc["lon"],
+        "appid": API_KEY, "units": "metric", "lang": "id"
+    })
+    forecast_raw = get_json(BASE_FORECAST_URL, {
+        "lat": loc["lat"], "lon": loc["lon"],
+        "appid": API_KEY, "units": "metric", "lang": "id"
+    })
+    air_raw = get_json(BASE_AIR_URL, {
+        "lat": loc["lat"], "lon": loc["lon"], "appid": API_KEY
+    })
 
-    # Air Pollution
-    air_raw = get_air_pollution(location["lat"], location["lon"])
-    air_clean = normalize_air_pollution(air_raw)
+    current = normalize_current(current_raw)
+    forecast = normalize_forecast(forecast_raw)
+    air = normalize_air(air_raw)
 
-    # FINAL API-READY RESPONSE
-    response = {
-        "location": location,
-        "current": current_clean,
-        "forecast_24h": forecast_clean,
-        "air_quality": air_clean,
-        "timezone": "UTC+7 (WIB)"
-    }
+    # =======================
+    # CURRENT WEATHER CARDS
+    # =======================
+    st.markdown(f"### 📍 {loc['city']}, {loc['country']}")
 
-    st.subheader("API-ready Response")
-    st.json(response)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("🌡️ Suhu", f"{current['temp']} °C")
+    c2.metric("🤒 Terasa", f"{current['feels']} °C")
+    c3.metric("💧 Kelembapan", f"{current['humidity']} %")
+    c4.metric("🌬️ Angin", f"{current['wind']} m/s")
+
+    st.info(f"**{current['weather']}** — Update: {current['time']}")
+
+    # =======================
+    # FORECAST TABLE
+    # =======================
+    st.markdown("### ⏱️ Forecast 24 Jam Ke Depan")
+    st.dataframe(forecast, use_container_width=True)
+
+    # =======================
+    # AIR QUALITY
+    # =======================
+    st.markdown("### 🌫️ Kualitas Udara")
+
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("AQI", air["AQI"])
+    a2.metric("PM2.5", air["PM2.5"])
+    a3.metric("PM10", air["PM10"])
+    a4.metric("CO", air["CO"])
+
+    st.caption(f"Update: {air['Waktu']}")
